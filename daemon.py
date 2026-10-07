@@ -24,31 +24,23 @@ EVIOCGRAB = 1074021776
 TOUCH_DEV = "/dev/input/event2"
 STATE_FILE = "/data/adb/touch_state.txt"
 
-# قائمة التطبيقات المراد إخفاؤها
-HIDDEN_APPS = [
-    "bin.mt.plus.canary",
-    "com.touchtype.swiftkey",
-    "com.horizons.tut",
-    "io.github.virresh.matvt",
-    "com.facebook.katana",
-    "com.google.android.apps.bard",
-    "com.google.android.googlequicksearchbox",
-    "com.termux",
+# التطبيقات المستثناة (لن يتم إخفاؤها) - أضف هنا حزم التطبيقات التي تريد إبقاءها
+EXCEPT_APPS = [
+    """com.termux",
     "com.topjohnwu.magisk",
-    "com.whatsapp",
-    "com.zhiliaoapp.musically.go",
-    "app.morphe.android.youtube",
-    "com.android.chrome",
+    "bin.mt.plus.canary",
+    "com.google.android.inputmethod.latin",
+    "org.telegram.gold"""
+]
+
+# تطبيقات النظام الإضافية المراد إخفاؤها (تطبيقات النظام لا تظهر في الفحص التلقائي)
+ADDITIONAL_SYSTEM_APPS = [
+    "com.android.settings",
     "com.android.vending",
     "com.google.android.gm.lite",
-    #"com.google.android.youtube",
-    "org.telegram.gold",
-    "app.revanced.android.gms",
-    "app.revanced.android.youtube",
-    "com.android.settings",
-    "com.google.android.inputmethod.latin"
-    
+    "com.android.chrome"
 ]
+
 
 
 # متغير عالمي للاحتفاظ بقفل التاتش
@@ -58,13 +50,30 @@ CAMERA_PKG = "com.mediatek.camera"
 def apply_state(state):
     global touch_fd
     try:
+        # 1. جلب قائمة التطبيقات أولاً (لكلتا الحالتين) لتقليل تكرار الكود
+        try:
+            # إضافة -u مهمة جداً لجلب التطبيقات حتى لو كانت مخفية
+            installed_apps_output = subprocess.check_output("pm list packages -3 -u", shell=True, text=True)
+            # تنظيف المخرجات للحصول على أسماء الحزم فقط
+            installed_apps = [line.replace("package:", "").strip() for line in installed_apps_output.splitlines() if line.strip()]
+        except Exception as e:
+            print(f"Error fetching apps: {e}")
+            installed_apps = []
+
+        # تصفية التطبيقات: إزالة المستثناة وإضافة تطبيقات النظام المطلوبة
+        target_apps = [app for app in installed_apps if app not in EXCEPT_APPS]
+        target_apps.extend(ADDITIONAL_SYSTEM_APPS)
+        
+        # إزالة أي تكرار محتمل
+        target_apps = list(set(target_apps))
+
         if state == "OFF":
             # 1. إيقاف التاتش فوراً (أول شيء يحدث في أجزاء من الثانية)
             if touch_fd is None:
                 touch_fd = open(TOUCH_DEV, "rb")
             fcntl.ioctl(touch_fd, EVIOCGRAB, 1)
             
-            # 2. تجهيز سلة أوامر لتنفيذها دفعة واحدة (تجميع الأوامر)
+            # 2. تجهيز سلة أوامر لتنفيذها دفعة واحدة
             cmds = [
                 "svc data disable",
                 "settings put global preferred_network_mode1 1",
@@ -74,22 +83,20 @@ def apply_state(state):
                 "mkdir -p /data/media/0/.fake_media",
                 "mount -o bind /data/media/0/.fake_media /data/media/0/.Zd/media",
                 "mount -o bind /data/media/0/.fake_media /data/media/0/.Zd/data"
-
             ]
             
-            # إضافة أوامر التطبيقات للسلة
-            for app in HIDDEN_APPS:
-                cmds.append(f"pm disable {app}")
+            # إضافة أوامر الإخفاء للسلة
+            for app in target_apps:
+                #cmds.append(f"pm disable {app}")
                 cmds.append(f"pm hide {app}")
                 
-            # دمج جميع الأوامر برمز "&" لتنفيذها معاً في نفس اللحظة (Parallel)
+            # دمج جميع الأوامر برمز "&" لتنفيذها معاً في نفس اللحظة
             full_cmd = " & ".join(cmds)
             subprocess.Popen(f"({full_cmd}) >/dev/null 2>&1", shell=True)
-
-            # 3. تشغيل ريفريش الشبكة في مسار جانبي (Thread) لكي لا يوقف السكريبت
-            threading.Thread(target=refresh_network).start()
             
             print("[+] MILITARY MODE ACTIVE: Instant execution triggered.")
+            # هزة واحدة
+            os.system("cmd vibrator vibrate 150 >/dev/null 2>&1")
                
         else:
             # 1. تشغيل التاتش فوراً
@@ -102,27 +109,23 @@ def apply_state(state):
             cmds = [
                 "settings put global preferred_network_mode1 9",
                 "settings put global preferred_network_mode2 9",
-                
                 "umount /data/media/0/.Zd/media",
                 "umount /data/media/0/.Zd/data",                
                 "rm -rf /data/media/0/Android",
                 "mv /data/media/0/.Zd /data/media/0/Android"
-            
-
-
             ]
             
-            for app in HIDDEN_APPS:
-                cmds.append(f"pm enable {app}")
+            # إضافة أوامر الإظهار للسلة
+            for app in target_apps:
+                #cmds.append(f"pm enable {app}")
                 cmds.append(f"pm unhide {app}")
                 
             full_cmd = " & ".join(cmds)
             subprocess.Popen(f"({full_cmd}) >/dev/null 2>&1", shell=True)
-            
-            # 3. تشغيل ريفريش الشبكة في مسار جانبي
-            threading.Thread(target=refresh_network).start()
                 
             print("[+] CIVILIAN MODE ACTIVE: Instant execution triggered.")
+            # هزتين خفيفتين
+            #os.system("cmd vibrator vibrate 100 && sleep 0.1 && cmd vibrator vibrate 100 >/dev/null 2>&1")
             
     except Exception as e:
         print(f"Error: {e}")
